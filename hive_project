@@ -1,0 +1,105 @@
+#go to cloudera and open the my sql
+#Go to Mysql
+
+mysql -uroot -pcloudera
+
+Create  database if not exists prodb;
+use prodb;
+
+# go to database prodb and use the customer_total table to create customer_src table as per the requirement
+# to use it as source table
+
+create table customer_src(id int(10),username varchar(100),sub_port varchar(100),\
+host varchar(100),date_time varchar(100),hit_count_val_1 varchar(100),hit_count_val_2 varchar(100),\
+hit_count_val_3 varchar(100),timezone varchar(100),method varchar(100),`procedure` varchar(100),\
+value varchar(100),sub_product varchar(100),web_info varchar(100),status_code varchar(100));
+
+insert into customer_src select * From customer_total where id>=301 and id<=330;
+
+quit
+
+
+
+# go to edge node
+# have a password file in home/cloudera/passfile
+
+# create a sqoop job named inpjob
+sqoop job --create inpjob -- import --connect jdbc:mysql://localhost/prodb --username root \
+--password-file file:///home/cloudera/passfile -m 1 --table customer_src  \
+--target-dir /user/cloudera/customer_stage_loc --incremental append --check-column id \
+--last-value 0 --as-avrodatafile
+
+#list the sqoop jobs
+sqoop job --list
+
+# go to path in edge node to use the avro schema
+mkdir /home/cloudera/avsrcdir
+cd /home/cloudera/avsrcdir
+
+# execute the sqoop job
+sqoop job --exec inpjob
+
+# make the directory in hadoop
+hadoop fs -mkdir /user/cloudera/avscdirpro
+
+# push the avro schema to hadoop
+hadoop fs -put /home/cloudera/avsrcdir/customer_src.avsc /user/cloudera/avscdirpro
+
+# open the hive shell
+hive
+create database prodb;
+use prodb;
+
+# create customer_src table on imported data using the avro schema
+create  table customer_src   ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.avro.AvroSerDe' \
+STORED AS AVRO LOCATION '/user/cloudera/customer_stage_loc'  \
+TBLPROPERTIES ('avro.schema.url'='/user/cloudera/avscdirpro/customer_src.avsc');
+
+select * from customer_src limit 10;
+
+# create external partition table using the same schema as per the requirement
+create external table customer_target_tab partitioned by (current_day string,year string,month string,day string) \
+ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.avro.AvroSerDe' STORED AS AVRO \
+LOCATION '/user/cloudera/customer_target_tab'  TBLPROPERTIES ('avro.schema.url'='/user/cloudera/avscdirpro/customer_src.avsc');
+
+select * from customer_target_tab limit 10;
+
+# set the hive properties for dynamic partitioning
+set hive.exec.max.dynamic.partitions=1000;
+set hive.exec.dynamic.partition.mode=nonstrict;
+
+#dynamic loads as per the requirement
+#using sql commands for extracting the perticular date and month columns as per the requirement
+insert into prodb.customer_target_tab partition (current_day,year,month,day) \
+select id, username,sub_port,host,date_time,hit_count_val_1,hit_count_val_2,hit_count_val_3,\
+        timezone,method,procedure,value,sub_product,web_info,status_code,current_date,\
+        year(from_unixtime(unix_timestamp(date_time,'dd/MMM/yyyy:HH:mm:ss Z'),'yyyy-MM-dd')) ,\
+        MONTH(from_unixtime(unix_timestamp(date_time,'dd/MMM/yyyy:HH:mm:ss Z'),'yyyy-MM-dd')) ,\
+        DAY(from_unixtime(unix_timestamp(date_time,'dd/MMM/yyyy:HH:mm:ss Z'),'yyyy-MM-dd'))\
+                                from customer_src \
+                                where not(upper(web_info) like'%JAKARTA%');
+
+# check weather the partition folders are created or not.
+
+!hadoop fs -ls /user/cloudera/customer_target_tab;
+!hadoop fs -ls /user/cloudera/customer_target_tab/current_day=2023-02-04;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
